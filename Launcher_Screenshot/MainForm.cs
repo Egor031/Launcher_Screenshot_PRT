@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using System.Windows.Forms.VisualStyles;
 
 namespace NxPipelineLauncher
 {
@@ -336,6 +337,7 @@ namespace NxPipelineLauncher
                 Log("--- Step 2: Render OBJ -> PNG ---");
 
                 var overwriteArg = cbOverwrite.Checked ? " --overwrite" : "";
+                //var edgesArg = " --edges";   // <-- добавили
                 var views = "Front,Back,Right,Left,Top,Bottom,Isometric,Trimetric";
 
                 var rc2 = await RunProcessAsync(
@@ -344,6 +346,7 @@ namespace NxPipelineLauncher
                     workingDir: AppDir,
                     extraEnv: Array.Empty<(string key, string value)>()
                 );
+
 
                 if (rc2 != 0)
                 {
