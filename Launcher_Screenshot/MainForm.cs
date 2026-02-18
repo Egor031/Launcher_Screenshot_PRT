@@ -22,12 +22,16 @@ namespace NxPipelineLauncher
         private Button btnBrowseNxbin = new Button();
         private Button btnBrowseObj = new Button();
         private TextBox tbLog = new TextBox();
+        private CheckBox cbCustomObj = new CheckBox();
+
 
         // --- Paths relative to launcher exe folder ---
         private readonly string AppDir;
         private string NxJournalPath => Path.Combine(AppDir, "NX", "export_prt_to_obj_batch.py");
         private string RenderScriptPath => Path.Combine(AppDir, "Render", "render_folder.py");
         private string PortablePythonPath => Path.Combine(AppDir, "Tools", "py311", "python.exe");
+
+        private bool _objManuallyEdited = false;
 
         public MainForm()
         {
@@ -40,7 +44,31 @@ namespace NxPipelineLauncher
 
             BuildUi();
             AutoFillNxbinFromUgii();
+            UpdateObjUiState();
             Log("Ready.");
+        }
+
+        private void UpdateObjUiState()
+        {
+            bool custom = cbCustomObj.Checked;
+
+            tbObj.Enabled = custom;
+            btnBrowseObj.Enabled = custom;
+
+            if (!custom)
+            {
+                // жестко привязываем к PNG
+                AutoSetObjToDefault();
+            }
+        }
+
+        private void AutoSetObjToDefault()
+        {
+            var png = tbPng.Text.Trim();
+            if (string.IsNullOrWhiteSpace(png))
+                return;
+
+            tbObj.Text = Path.Combine(png, "_obj_cache");
         }
 
         private void BuildUi()
@@ -75,7 +103,12 @@ namespace NxPipelineLauncher
             // --- Row 1: PNG output ---
             layout.Controls.Add(new Label() { Text = "PNG output folder:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
             tbPng.Dock = DockStyle.Fill;
-            tbPng.TextChanged += (_, __) => AutoFillObjIfEmpty();
+            tbPng.TextChanged += (_, __) =>
+            {
+                if (!cbCustomObj.Checked)
+                    AutoSetObjToDefault();
+            };
+
             layout.Controls.Add(tbPng, 1, 1);
             btnBrowsePng.Text = "Browse…";
             btnBrowsePng.Dock = DockStyle.Fill;
@@ -91,14 +124,33 @@ namespace NxPipelineLauncher
             btnBrowseNxbin.Click += (_, __) => PickFolder(tbNxbin, "Select NXBIN folder (contains run_journal.exe)");
             layout.Controls.Add(btnBrowseNxbin, 2, 2);
 
-            // --- Row 3: OBJ cache (optional) ---
-            layout.Controls.Add(new Label() { Text = "OBJ cache folder (optional):", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
-            tbObj.Dock = DockStyle.Fill;
-            layout.Controls.Add(tbObj, 1, 3);
+            // --- Row 3: OBJ cache ---
+            layout.Controls.Add(new Label() { Text = "OBJ cache folder:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
+
+            var objPanel = new FlowLayoutPanel();
+            objPanel.Dock = DockStyle.Fill;
+            objPanel.FlowDirection = FlowDirection.LeftToRight;
+            objPanel.WrapContents = false;
+
+            cbCustomObj.Text = "Custom";
+            cbCustomObj.AutoSize = true;
+            cbCustomObj.CheckedChanged += (_, __) => UpdateObjUiState();
+
+            tbObj.Width = 600; // чтобы не сжимался в FlowLayoutPanel
+            tbObj.Enabled = false;
+
             btnBrowseObj.Text = "Browse…";
-            btnBrowseObj.Dock = DockStyle.Fill;
+            btnBrowseObj.Width = 90;
+            btnBrowseObj.Enabled = false;
             btnBrowseObj.Click += (_, __) => PickFolder(tbObj, "Select folder for OBJ cache");
-            layout.Controls.Add(btnBrowseObj, 2, 3);
+
+            objPanel.Controls.Add(cbCustomObj);
+            objPanel.Controls.Add(tbObj);
+            objPanel.Controls.Add(btnBrowseObj);
+
+            layout.Controls.Add(objPanel, 1, 3);
+            layout.SetColumnSpan(objPanel, 2); // занять 2 колонки (текст + кнопка)
+
 
             // --- Row 4: options ---
             cbOverwrite.Text = "Overwrite PNG";
@@ -148,15 +200,20 @@ namespace NxPipelineLauncher
 
         private void AutoFillObjIfEmpty()
         {
+            if (_objManuallyEdited)
+                return;
+
             if (!string.IsNullOrWhiteSpace(tbObj.Text))
                 return;
 
             var png = tbPng.Text.Trim();
-            if (Directory.Exists(png))
-            {
-                tbObj.Text = Path.Combine(png, "_obj_cache");
-            }
+            if (string.IsNullOrWhiteSpace(png))
+                return;
+
+            tbObj.Text = Path.Combine(png, "_obj_cache");
         }
+
+
 
         private void PickFolder(TextBox target, string title)
         {
@@ -179,9 +236,20 @@ namespace NxPipelineLauncher
                 BeginInvoke(new Action<string>(Log), line);
                 return;
             }
+
             var ts = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             tbLog.AppendText($"[{ts}] {line}{Environment.NewLine}");
+
+            // Limit log size to avoid huge memory usage on big batches
+            const int MaxChars = 200_000; // ~200 KB of text
+            if (tbLog.TextLength > MaxChars)
+            {
+                tbLog.Text = tbLog.Text.Substring(tbLog.TextLength - MaxChars);
+                tbLog.SelectionStart = tbLog.TextLength;
+                tbLog.ScrollToCaret();
+            }
         }
+
 
         private void SetUiEnabled(bool enabled)
         {
@@ -217,11 +285,16 @@ namespace NxPipelineLauncher
                 err = "PRT folder does not exist.";
                 return false;
             }
-            if (!Directory.Exists(pngDir))
+            try
             {
-                err = "PNG output folder does not exist.";
+                Directory.CreateDirectory(pngDir);
+            }
+            catch (Exception ex)
+            {
+                err = $"Cannot create/access PNG output folder: {ex.Message}";
                 return false;
             }
+
             if (!Directory.Exists(nxbinDir))
             {
                 err = "NXBIN folder does not exist.";
@@ -236,11 +309,29 @@ namespace NxPipelineLauncher
             //    return false;
             //}
 
-            // Create OBJ cache folder if missing
-            if (string.IsNullOrWhiteSpace(objDir))
+            // OBJ cache folder logic:
+            // - Default: always use <PNG>\_obj_cache
+            // - If user enabled "Custom" -> use tbObj (if empty -> fallback to default)
+            if (!cbCustomObj.Checked)
+            {
                 objDir = Path.Combine(pngDir, "_obj_cache");
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(objDir))
+                    objDir = Path.Combine(pngDir, "_obj_cache");
+            }
 
-            Directory.CreateDirectory(objDir);
+            try
+            {
+                Directory.CreateDirectory(objDir);
+            }
+            catch (Exception ex)
+            {
+                err = $"Cannot create/access OBJ cache folder: {ex.Message}";
+                return false;
+            }
+
 
             // Validate required project files exist near exe
             if (!File.Exists(NxJournalPath))
@@ -293,8 +384,11 @@ namespace NxPipelineLauncher
 
             SetUiEnabled(false);
 
-            var exportLog = Path.Combine(pngDir, "export_log.txt");
-            var renderLog = Path.Combine(pngDir, "render_log.txt");
+            var logsDir = Path.Combine(pngDir, "_logs");
+            Directory.CreateDirectory(logsDir);
+
+            var exportLog = Path.Combine(logsDir, "export_log.txt");
+            var renderLog = Path.Combine(logsDir, "render_log.txt");
 
             Log("=== START ===");
             Log($"PRT: {prtDir}");
@@ -311,8 +405,6 @@ namespace NxPipelineLauncher
                 Log("--- Step 1: NX Export PRT -> OBJ ---");
                 var runJournalExe = Path.Combine(nxbinDir, "run_journal.exe");
 
-                var env = new ProcessStartInfo().Environment; // empty template not used
-                // We'll pass env via ProcessStartInfo.EnvironmentVariables below.
 
                 var rc1 = await RunProcessAsync(
                     fileName: runJournalExe,
