@@ -6,14 +6,31 @@ import time
 import traceback
 import NXOpen
 
-# значения по умолчанию
-INPUT_DIR  = r"D:\ZherlitsynEE\SaveFormatTest\Test\PRT"
-OUTPUT_DIR = r"D:\ZherlitsynEE\SaveFormatTest\Test\OBJ"
-LOG_FILE   = r"D:\ZherlitsynEE\SaveFormatTest\Test\export_log.txt"
 
-INPUT_DIR  = os.environ.get("PRT_DIR", INPUT_DIR)
-OUTPUT_DIR = os.environ.get("OBJ_DIR", OUTPUT_DIR)
-LOG_FILE   = os.environ.get("LOG_FILE", LOG_FILE)
+def _script_dir() -> str:
+    # В NX journal __file__ обычно доступен, но на всякий случай fallback
+    try:
+        return os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        return os.getcwd()
+
+
+# ---------------- DEFAULT PATHS (portable) ----------------
+
+BASE_DIR = _script_dir()
+
+DEFAULT_INPUT_DIR = os.path.join(BASE_DIR, "PRT")
+DEFAULT_OUTPUT_DIR = os.path.join(BASE_DIR, "OBJ")
+
+INPUT_DIR = os.environ.get("PRT_DIR", DEFAULT_INPUT_DIR)
+OUTPUT_DIR = os.environ.get("OBJ_DIR", DEFAULT_OUTPUT_DIR)
+
+# LOG_FILE по умолчанию — в папке OUTPUT_DIR
+DEFAULT_LOG_FILE = os.path.join(OUTPUT_DIR, "export_log.txt")
+LOG_FILE = os.environ.get("LOG_FILE", DEFAULT_LOG_FILE)
+
+# Опционально: перезаписывать существующие OBJ
+OVERWRITE = os.environ.get("OVERWRITE", "0").strip() in ("1", "true", "True", "YES", "yes")
 
 
 def log_line(f, msg: str):
@@ -25,25 +42,27 @@ def log_line(f, msg: str):
 
 
 def main():
-    
     start_all = time.time()
 
-    # Открываем лог сразу
+    # гарантируем существование папок под output и лог
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
     with open(LOG_FILE, "a", encoding="utf-8") as logf:
         log_line(logf, "=== START EXPORT PRT -> OBJ ===")
-        log_line(logf, f"INPUT_DIR = {INPUT_DIR}")
+        log_line(logf, f"SCRIPT_DIR = {BASE_DIR}")
+        log_line(logf, f"INPUT_DIR  = {INPUT_DIR}")
         log_line(logf, f"OUTPUT_DIR = {OUTPUT_DIR}")
+        log_line(logf, f"LOG_FILE   = {LOG_FILE}")
+        log_line(logf, f"OVERWRITE  = {OVERWRITE}")
 
         if not os.path.isdir(INPUT_DIR):
             log_line(logf, f"ERROR: INPUT_DIR does not exist: {INPUT_DIR}")
+            log_line(logf, "TIP: set env var PRT_DIR to a folder with .prt files.")
             return
 
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-        # NX Session
         theSession = NXOpen.Session.GetSession()
 
-        # Создаём creator один раз
         objCreator = theSession.DexManager.CreateWavefrontObjCreator()
         objCreator.ExportFrom = NXOpen.WavefrontObjCreator.ExportFromOption.ExistingPart
         objCreator.AngularTolerance = 44.0
@@ -52,11 +71,10 @@ def main():
 
         count_ok = 0
         count_fail = 0
+        count_skip = 0
         failed = []
 
-        files = sorted(os.listdir(INPUT_DIR))
-        prt_files = [fn for fn in files if fn.lower().endswith(".prt")]
-
+        prt_files = sorted([fn for fn in os.listdir(INPUT_DIR) if fn.lower().endswith(".prt")])
         log_line(logf, f"Found {len(prt_files)} .prt files")
 
         for i, fname in enumerate(prt_files, start=1):
@@ -64,8 +82,8 @@ def main():
             base = os.path.splitext(fname)[0]
             obj_path = os.path.join(OUTPUT_DIR, base + ".obj")
 
-            # (опционально) пропуск уже существующих
-            if os.path.exists(obj_path):
+            if os.path.exists(obj_path) and not OVERWRITE:
+                count_skip += 1
                 log_line(logf, f"[{i}/{len(prt_files)}] SKIP exists: {fname}")
                 continue
 
@@ -85,16 +103,15 @@ def main():
                 failed.append(fname)
 
                 log_line(logf, f"[{i}/{len(prt_files)}] FAIL {fname} ({dt:.2f}s)  err={repr(e)}")
-                # Полный traceback в лог (очень полезно)
                 logf.write(traceback.format_exc() + "\n")
                 logf.flush()
 
-        # Чистим creator
         objCreator.Destroy()
 
         total_dt = time.time() - start_all
         log_line(logf, "=== FINISH ===")
-        log_line(logf, f"OK: {count_ok}")
+        log_line(logf, f"OK:   {count_ok}")
+        log_line(logf, f"SKIP: {count_skip}")
         log_line(logf, f"FAIL: {count_fail}")
         log_line(logf, f"Total time: {total_dt:.2f}s")
 
