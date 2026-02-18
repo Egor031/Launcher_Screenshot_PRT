@@ -27,8 +27,8 @@ namespace Launcher_Screenshot.src
 
         // --- Paths relative to launcher exe folder ---
         private readonly string AppDir;
-        private string NxJournalPath => Path.Combine(AppDir, "NX", "export_prt_to_obj_batch.py");
-        private string RenderScriptPath => Path.Combine(AppDir, "Render", "render_folder.py");
+        private string NxJournalPath => Path.Combine(AppDir, "scripts", "NX", "export_prt_to_obj_batch.py");
+        private string RenderScriptPath => Path.Combine(AppDir, "scripts", "Render", "render_folder.py");
         private string PortablePythonPath => Path.Combine(AppDir, "Tools", "py311", "python.exe");
 
         private bool _objManuallyEdited = false;
