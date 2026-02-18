@@ -216,8 +216,13 @@ def main():
 
         for idx, obj_path in enumerate(obj_files, start=1):
             part_id = obj_path.stem
-            part_dir = output_dir / part_id
+
+            # сохранить структуру подпапок относительно --input
+            rel_dir = obj_path.parent.relative_to(input_dir)   # например: A/B
+            part_dir = output_dir / rel_dir / part_id          # PNG/A/B/<part_id>/
             part_dir.mkdir(parents=True, exist_ok=True)
+
+
 
             t0 = time.time()
 

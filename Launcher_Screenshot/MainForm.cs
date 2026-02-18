@@ -228,13 +228,13 @@ namespace NxPipelineLauncher
                 return false;
             }
 
-            // Verify there is at least one .prt
-            var prtCount = Directory.GetFiles(prtDir, "*.prt", SearchOption.TopDirectoryOnly).Length;
-            if (prtCount == 0)
-            {
-                err = "No .prt files found in selected PRT folder (top-level).";
-                return false;
-            }
+            //// Verify there is at least one .prt
+            //var prtCount = Directory.GetFiles(prtDir, "*.prt", SearchOption.TopDirectoryOnly).Length;
+            //if (prtCount == 0)
+            //{
+            //    err = "No .prt files found in selected PRT folder (top-level).";
+            //    return false;
+            //}
 
             // Create OBJ cache folder if missing
             if (string.IsNullOrWhiteSpace(objDir))

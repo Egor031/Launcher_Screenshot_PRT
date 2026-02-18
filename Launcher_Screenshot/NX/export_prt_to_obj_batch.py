@@ -1,5 +1,6 @@
 # NX 1899
 # Batch export PRT -> OBJ (no UI) + logging
+# v0.1.0-alpha
 
 import os
 import time
@@ -8,11 +9,27 @@ import NXOpen
 
 
 def _script_dir() -> str:
-    # В NX journal __file__ обычно доступен, но на всякий случай fallback
     try:
         return os.path.dirname(os.path.abspath(__file__))
     except Exception:
         return os.getcwd()
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    val = os.environ.get(name, None)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _env_float(name: str, default: float) -> float:
+    val = os.environ.get(name, None)
+    if val is None:
+        return default
+    try:
+        return float(val.replace(",", "."))
+    except Exception:
+        return default
 
 
 # ---------------- DEFAULT PATHS (portable) ----------------
@@ -25,12 +42,13 @@ DEFAULT_OUTPUT_DIR = os.path.join(BASE_DIR, "OBJ")
 INPUT_DIR = os.environ.get("PRT_DIR", DEFAULT_INPUT_DIR)
 OUTPUT_DIR = os.environ.get("OBJ_DIR", DEFAULT_OUTPUT_DIR)
 
-# LOG_FILE по умолчанию — в папке OUTPUT_DIR
 DEFAULT_LOG_FILE = os.path.join(OUTPUT_DIR, "export_log.txt")
 LOG_FILE = os.environ.get("LOG_FILE", DEFAULT_LOG_FILE)
 
-# Опционально: перезаписывать существующие OBJ
-OVERWRITE = os.environ.get("OVERWRITE", "0").strip() in ("1", "true", "True", "YES", "yes")
+# Options via env
+OVERWRITE = _env_bool("OVERWRITE", False)
+RECURSIVE = _env_bool("RECURSIVE", True)
+ANGULAR_TOL = _env_float("ANGULAR_TOL", 44.0)
 
 
 def log_line(f, msg: str):
@@ -41,31 +59,72 @@ def log_line(f, msg: str):
     f.flush()
 
 
+def iter_prt_files(root_dir: str, recursive: bool):
+    """
+    Yield (absolute_path, relative_path_from_root) for .prt files.
+    """
+    root_dir = os.path.abspath(root_dir)
+
+    if not recursive:
+        for fn in sorted(os.listdir(root_dir)):
+            if fn.lower().endswith(".prt"):
+                abs_path = os.path.join(root_dir, fn)
+                if os.path.isfile(abs_path):
+                    yield abs_path, fn
+        return
+
+    # recursive
+    for cur_root, dirs, files in os.walk(root_dir):
+        dirs.sort()
+        files.sort()
+        for fn in files:
+            if not fn.lower().endswith(".prt"):
+                continue
+            abs_path = os.path.join(cur_root, fn)
+            if not os.path.isfile(abs_path):
+                continue
+            rel_path = os.path.relpath(abs_path, root_dir)
+            yield abs_path, rel_path
+
+
 def main():
     start_all = time.time()
 
-    # гарантируем существование папок под output и лог
+    # Ensure output/log dirs exist
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
     with open(LOG_FILE, "a", encoding="utf-8") as logf:
         log_line(logf, "=== START EXPORT PRT -> OBJ ===")
-        log_line(logf, f"SCRIPT_DIR = {BASE_DIR}")
-        log_line(logf, f"INPUT_DIR  = {INPUT_DIR}")
-        log_line(logf, f"OUTPUT_DIR = {OUTPUT_DIR}")
-        log_line(logf, f"LOG_FILE   = {LOG_FILE}")
-        log_line(logf, f"OVERWRITE  = {OVERWRITE}")
+        log_line(logf, f"SCRIPT_DIR   = {BASE_DIR}")
+        log_line(logf, f"INPUT_DIR    = {INPUT_DIR}")
+        log_line(logf, f"OUTPUT_DIR   = {OUTPUT_DIR}")
+        log_line(logf, f"LOG_FILE     = {LOG_FILE}")
+        log_line(logf, f"RECURSIVE    = {RECURSIVE}")
+        log_line(logf, f"OVERWRITE    = {OVERWRITE}")
+        log_line(logf, f"ANGULAR_TOL  = {ANGULAR_TOL}")
 
         if not os.path.isdir(INPUT_DIR):
             log_line(logf, f"ERROR: INPUT_DIR does not exist: {INPUT_DIR}")
             log_line(logf, "TIP: set env var PRT_DIR to a folder with .prt files.")
             return
 
+        # Collect files first (so we can log counts)
+        prt_list = list(iter_prt_files(INPUT_DIR, RECURSIVE))
+        log_line(logf, f"Found {len(prt_list)} .prt files")
+
+        if not prt_list:
+            log_line(logf, "No .prt files found. Nothing to do.")
+            log_line(logf, "=== END EXPORT ===")
+            return
+
+        # NX Session
         theSession = NXOpen.Session.GetSession()
 
+        # Create creator once
         objCreator = theSession.DexManager.CreateWavefrontObjCreator()
         objCreator.ExportFrom = NXOpen.WavefrontObjCreator.ExportFromOption.ExistingPart
-        objCreator.AngularTolerance = 44.0
+        objCreator.AngularTolerance = ANGULAR_TOL
         objCreator.FlattenAssemblyStructure = True
         objCreator.FileSaveFlag = False
 
@@ -74,35 +133,35 @@ def main():
         count_skip = 0
         failed = []
 
-        prt_files = sorted([fn for fn in os.listdir(INPUT_DIR) if fn.lower().endswith(".prt")])
-        log_line(logf, f"Found {len(prt_files)} .prt files")
+        for i, (prt_abs, prt_rel) in enumerate(prt_list, start=1):
+            base = os.path.splitext(prt_rel)[0]  # keeps subfolders in name
+            # Keep folder structure for outputs:
+            obj_abs = os.path.join(OUTPUT_DIR, base + ".obj")
 
-        for i, fname in enumerate(prt_files, start=1):
-            prt_path = os.path.join(INPUT_DIR, fname)
-            base = os.path.splitext(fname)[0]
-            obj_path = os.path.join(OUTPUT_DIR, base + ".obj")
+            out_dir = os.path.dirname(obj_abs)
+            os.makedirs(out_dir, exist_ok=True)
 
-            if os.path.exists(obj_path) and not OVERWRITE:
+            if os.path.exists(obj_abs) and not OVERWRITE:
                 count_skip += 1
-                log_line(logf, f"[{i}/{len(prt_files)}] SKIP exists: {fname}")
+                log_line(logf, f"[{i}/{len(prt_list)}] SKIP exists: {prt_rel}")
                 continue
 
             t0 = time.time()
             try:
-                objCreator.InputFile = prt_path
-                objCreator.OutputFile = obj_path
+                objCreator.InputFile = prt_abs
+                objCreator.OutputFile = obj_abs
                 objCreator.Commit()
 
                 dt = time.time() - t0
                 count_ok += 1
-                log_line(logf, f"[{i}/{len(prt_files)}] OK  {fname} -> {os.path.basename(obj_path)}  ({dt:.2f}s)")
+                log_line(logf, f"[{i}/{len(prt_list)}] OK  {prt_rel} -> {os.path.relpath(obj_abs, OUTPUT_DIR)}  ({dt:.2f}s)")
 
             except Exception as e:
                 dt = time.time() - t0
                 count_fail += 1
-                failed.append(fname)
+                failed.append(prt_rel)
 
-                log_line(logf, f"[{i}/{len(prt_files)}] FAIL {fname} ({dt:.2f}s)  err={repr(e)}")
+                log_line(logf, f"[{i}/{len(prt_list)}] FAIL {prt_rel} ({dt:.2f}s)  err={repr(e)}")
                 logf.write(traceback.format_exc() + "\n")
                 logf.flush()
 
