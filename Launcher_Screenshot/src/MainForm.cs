@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Windows.Forms.VisualStyles;
 
-namespace NxPipelineLauncher
+namespace Launcher_Screenshot.src
 {
     public class MainForm : Form
     {

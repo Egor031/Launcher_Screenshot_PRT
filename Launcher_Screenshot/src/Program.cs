@@ -1,7 +1,8 @@
+
 using System;
 using System.Windows.Forms;
 
-namespace NxPipelineLauncher
+namespace Launcher_Screenshot.src
 {
     internal static class Program
     {
